@@ -29,7 +29,7 @@ goTest() {
     if [[ -n "${LABEL_FILTER}" ]]; then
       FILTER="${FILTER} && ${LABEL_FILTER}"
     fi
-    go test ./e2e -coverprofile cover.out -timeout 60m -test.v -ginkgo.vv -ginkgo.label-filter="${FILTER}" "${TEST_OPTS}"
+    go test ./e2e -coverprofile cover.out -timeout 60m -test.v -ginkgo.vv -ginkgo.poll-progress-after=2m -ginkgo.poll-progress-interval=1m -ginkgo.label-filter="${FILTER}" "${TEST_OPTS}"
   )
 }
 

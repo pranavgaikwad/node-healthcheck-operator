@@ -193,40 +193,63 @@ jobs:
 
     # --- Run tests ---
     - name: Run e2e tests
+      timeout-minutes: 20
+      shell: bash
+      env:
+        DIAGNOSTICS_DIR: ${{ runner.temp }}/kind-e2e-diagnostics
       run: |
+        mkdir -p "$DIAGNOSTICS_DIR"
         # The reboot watcher simulates node reboot on Kind by restarting the
         # Docker container when kubelet stops. It must run in the same step as
         # the tests so GH Actions keeps the background process alive.
         # MEDIK8S_REBOOT_DELAY gives NHC time to detect the unhealthy node
         # and create the remediation CR before the node comes back.
         export MEDIK8S_REBOOT_DELAY=120
-        make dev-reboot-watcher
+        make dev-reboot-watcher > "$DIAGNOSTICS_DIR/reboot-watcher.log" 2>&1
 
         echo "=== Verifying Operator Pods ==="
-        kubectl get pods -n ${DEPLOY_SNR_NAMESPACE} -o wide
-        kubectl get pods -n ${DEPLOY_NHC_NAMESPACE} -o wide
+        kubectl --request-timeout=10s get pods -A -o wide | tee "$DIAGNOSTICS_DIR/pods-before-test.txt"
 
         OPERATOR_NS=${DEPLOY_NHC_NAMESPACE} \
         SNR_STRATEGY=OutOfServiceTaint \
         LABEL_FILTER="!OCP-ONLY" \
-        make test-e2e
+        make test-e2e 2>&1 | tee "$DIAGNOSTICS_DIR/e2e.log"
 
-    - name: Debug on failure
-      if: ${{ !success() }}
+    - name: Collect diagnostics
+      if: ${{ always() }}
+      timeout-minutes: 5
+      shell: bash
+      env:
+        DIAGNOSTICS_DIR: ${{ runner.temp }}/kind-e2e-diagnostics
       run: |
-        echo "=== NHC Status ==="
-        kubectl get nodehealthchecks -o yaml 2>/dev/null || true
-        echo ""
-        echo "=== SelfNodeRemediation CRs ==="
-        kubectl get selfnoderemediations -A -o yaml 2>/dev/null || true
-        echo ""
-        echo "=== SelfNodeRemediationTemplates ==="
-        kubectl get selfnoderemediationtemplates -A -o yaml 2>/dev/null || true
-        echo ""
-        echo "=== Node Status ==="
-        kubectl get nodes -o wide 2>/dev/null || true
-        echo ""
-        echo "=== NHC Events ==="
-        kubectl get events -A --sort-by=.lastTimestamp --field-selector reason!=Pulling,reason!=Pulled 2>/dev/null | grep -iE 'healthcheck|remediat|disabled|enabled|template|unhealthy' || echo "No NHC-related events"
-        echo ""
-        make dev-ci-debug
+        mkdir -p "$DIAGNOSTICS_DIR"
+        capture() {
+          local file=$1
+          shift
+          timeout 20s kubectl --request-timeout=10s "$@" > "$DIAGNOSTICS_DIR/$file" 2>&1 || true
+        }
+        capture pods.txt get pods -A -o wide
+        capture pods.yaml get pods -A -o yaml
+        capture nodes.yaml get nodes -o yaml
+        capture events.yaml get events -A -o yaml
+        capture nhc.yaml get nodehealthchecks -o yaml
+        capture snr.yaml get selfnoderemediations -A -o yaml
+        capture snr-templates.yaml get selfnoderemediationtemplates -A -o yaml
+        capture webhooks.yaml get mutatingwebhookconfigurations,validatingwebhookconfigurations -o yaml
+
+        for namespace in "$DEPLOY_NHC_NAMESPACE" "$DEPLOY_SNR_NAMESPACE"; do
+          capture "$namespace-pods.txt" get pods -n "$namespace" -o name
+          while read -r pod; do
+            [[ "$pod" == pod/* ]] || continue
+            name=${pod#pod/}
+            capture "$namespace-$name.log" logs -n "$namespace" "$pod" --all-containers=true --timestamps=true
+            capture "$namespace-$name-previous.log" logs -n "$namespace" "$pod" --all-containers=true --timestamps=true --previous
+          done < "$DIAGNOSTICS_DIR/$namespace-pods.txt"
+        done
+
+    - name: Upload diagnostics
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: kind-e2e-diagnostics-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/kind-e2e-diagnostics

@@ -22,6 +22,8 @@ export DEPLOY_NHC_NAMESPACE="${DEPLOY_NHC_NAMESPACE:-k8s-test}"
 # Clone or update .tools directory
 if [ ! -d "${TOOLS_DIR}" ]; then
     git clone --depth 1 --branch testing-hang https://github.com/mpryc/medik8s-tools.git $TOOLS_DIR
+elif ! git -C "${TOOLS_DIR}" diff --quiet HEAD --; then
+    echo "Using local changes in .tools without resetting them."
 else
     echo "Updating existing .tools directory..."
     (cd "${TOOLS_DIR}" && git fetch origin testing-hang && git reset --hard origin/testing-hang)
