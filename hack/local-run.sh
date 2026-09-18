@@ -247,6 +247,12 @@ make dev-describe
 step "Running e2e tests"
 cd "${NHC_DIR}"
 
+step "Disabling SNR software reboot for Kind"
+kubectl -n "$DEPLOY_SNR_NAMESPACE" wait --for=create selfnoderemediationconfig/self-node-remediation-config --timeout=120s
+kubectl -n "$DEPLOY_SNR_NAMESPACE" patch selfnoderemediationconfig self-node-remediation-config --type=merge -p '{"spec":{"isSoftwareRebootEnabled":false}}'
+kubectl -n "$DEPLOY_SNR_NAMESPACE" wait --for=jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="IS_SOFTWARE_REBOOT_ENABLED")].value}'=false daemonset/self-node-remediation-ds --timeout=120s
+kubectl -n "$DEPLOY_SNR_NAMESPACE" rollout status daemonset/self-node-remediation-ds --timeout=120s
+
 step "Starting reboot watcher"
 export MEDIK8S_REBOOT_DELAY=120
 make dev-reboot-watcher
